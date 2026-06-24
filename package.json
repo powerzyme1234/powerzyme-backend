@@ -1,0 +1,19 @@
+{
+  "name": "powerzyme-backend",
+  "version": "1.0.0",
+  "description": "Backend server for Powerzyme Nutrition - handles Razorpay payments and Supabase order storage",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "express": "^4.19.2",
+    "cors": "^2.8.5",
+    "dotenv": "^16.4.5",
+    "razorpay": "^2.9.4",
+    "@supabase/supabase-js": "^2.45.4"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}
