@@ -140,7 +140,7 @@ app.post('/verify-payment', async (req, res) => {
           .join('<br>');
 
         await resend.emails.send({
-          from: 'Powerzyme Nutrition <onboarding@resend.dev>',
+          from: 'Powerzyme Nutrition <orders@powerzymenutrition.in>',
           to: email,
           subject: 'Your Powerzyme Order is Confirmed! 🎉',
           html: `
