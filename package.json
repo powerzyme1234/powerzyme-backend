@@ -12,7 +12,8 @@
     "dotenv": "^16.4.5",
     "razorpay": "^2.9.4",
     "@supabase/supabase-js": "^2.45.4",
-    "resend": "^4.0.1"
+    "resend": "^4.0.1",
+    "bcryptjs": "^2.4.3"
   },
   "engines": {
     "node": ">=18.0.0"
