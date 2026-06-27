@@ -8,6 +8,7 @@ const crypto = require('crypto');
 const Razorpay = require('razorpay');
 const { createClient } = require('@supabase/supabase-js');
 const { Resend } = require('resend');
+const bcrypt = require('bcryptjs');
 require('dotenv').config();
 
 const app = express();
@@ -214,6 +215,52 @@ app.post('/bulk-order', async (req, res) => {
     res.json({ success: true, submission: data[0] });
   } catch (err) {
     console.error('Error saving bulk order request:', err.message);
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// ---- 7. Customer signup ----
+app.post('/signup', async (req, res) => {
+  try {
+    const { name, email, password } = req.body;
+    if (!name || !email || !password) {
+      return res.status(400).json({ success: false, error: 'Name, email and password are required' });
+    }
+    const { data: existing } = await supabase.from('customers').select('id').eq('email', email).single();
+    if (existing) {
+      return res.status(400).json({ success: false, error: 'An account with this email already exists' });
+    }
+    const passwordHash = await bcrypt.hash(password, 10);
+    const { data, error } = await supabase
+      .from('customers')
+      .insert([{ name, email, password_hash: passwordHash }])
+      .select();
+    if (error) throw error;
+    res.json({ success: true, customer: { name: data[0].name, email: data[0].email } });
+  } catch (err) {
+    console.error('Error signing up:', err.message);
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// ---- 8. Customer login ----
+app.post('/login', async (req, res) => {
+  try {
+    const { email, password } = req.body;
+    if (!email || !password) {
+      return res.status(400).json({ success: false, error: 'Email and password are required' });
+    }
+    const { data: customer, error } = await supabase.from('customers').select('*').eq('email', email).single();
+    if (error || !customer) {
+      return res.status(400).json({ success: false, error: 'No account found with this email' });
+    }
+    const match = await bcrypt.compare(password, customer.password_hash);
+    if (!match) {
+      return res.status(400).json({ success: false, error: 'Incorrect password' });
+    }
+    res.json({ success: true, customer: { name: customer.name, email: customer.email } });
+  } catch (err) {
+    console.error('Error logging in:', err.message);
     res.status(500).json({ success: false, error: err.message });
   }
 });
