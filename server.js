@@ -7,6 +7,7 @@ const cors = require('cors');
 const crypto = require('crypto');
 const Razorpay = require('razorpay');
 const { createClient } = require('@supabase/supabase-js');
+const { Resend } = require('resend');
 require('dotenv').config();
 
 const app = express();
@@ -19,6 +20,7 @@ const {
   RAZORPAY_KEY_SECRET,
   SUPABASE_URL,
   SUPABASE_SERVICE_KEY,
+  RESEND_API_KEY,
   PORT = 3000
 } = process.env;
 
@@ -28,6 +30,9 @@ if (!RAZORPAY_KEY_ID || !RAZORPAY_KEY_SECRET) {
 if (!SUPABASE_URL || !SUPABASE_SERVICE_KEY) {
   console.warn('⚠️  Supabase credentials are missing. Set SUPABASE_URL and SUPABASE_SERVICE_KEY.');
 }
+if (!RESEND_API_KEY) {
+  console.warn('⚠️  RESEND_API_KEY is missing. Order confirmation emails will not be sent.');
+}
 
 const razorpay = new Razorpay({
   key_id: RAZORPAY_KEY_ID,
@@ -35,6 +40,7 @@ const razorpay = new Razorpay({
 });
 
 const supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_KEY);
+const resend = RESEND_API_KEY ? new Resend(RESEND_API_KEY) : null;
 
 // ---- Health check ----
 app.get('/', (req, res) => {
@@ -84,6 +90,7 @@ app.post('/verify-payment', async (req, res) => {
       razorpay_payment_id,
       razorpay_signature,
       customer_name,
+      email,
       phone,
       address,
       items,
@@ -112,6 +119,7 @@ app.post('/verify-payment', async (req, res) => {
       .from('orders')
       .insert([{
         customer_name,
+        email,
         phone,
         address,
         items: JSON.stringify(items),
@@ -123,9 +131,89 @@ app.post('/verify-payment', async (req, res) => {
 
     if (error) throw error;
 
+    // Send order confirmation email (non-blocking — order is already saved either way)
+    if (resend && email) {
+      try {
+        const itemsList = (items || [])
+          .map(i => `${i.name} x${i.qty} — ₹${i.price * i.qty}`)
+          .join('<br>');
+
+        await resend.emails.send({
+          from: 'Powerzyme Nutrition <onboarding@resend.dev>',
+          to: email,
+          subject: 'Your Powerzyme Order is Confirmed! 🎉',
+          html: `
+            <div style="font-family:Arial,sans-serif; max-width:480px; margin:0 auto;">
+              <h2 style="color:#B76E79;">Order Confirmed!</h2>
+              <p>Hi ${customer_name || 'there'},</p>
+              <p>Thanks for your order — here are the details:</p>
+              <p><b>Order Items:</b><br>${itemsList}</p>
+              <p><b>Total Paid:</b> ₹${amount}</p>
+              <p><b>Payment ID:</b> ${razorpay_payment_id}</p>
+              <p><b>Delivery Address:</b><br>${address}</p>
+              <p>We'll notify you once your order ships. Expected delivery: 4-6 days (1-2 days for Delhi NCR).</p>
+              <p style="margin-top:24px; color:#888; font-size:13px;">Powerzyme Nutrition · powerzymenutrition@gmail.com</p>
+            </div>
+          `
+        });
+      } catch (emailErr) {
+        console.error('Order saved, but confirmation email failed:', emailErr.message);
+      }
+    }
+
     res.json({ success: true, message: 'Payment verified and order saved', order: data[0] });
   } catch (err) {
     console.error('Error verifying payment:', err.message);
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// ---- 4. Get active coupons from Supabase ----
+app.get('/coupons', async (req, res) => {
+  try {
+    const { data, error } = await supabase.from('coupons').select('*').eq('active', true);
+    if (error) throw error;
+    res.json({ success: true, coupons: data });
+  } catch (err) {
+    console.error('Error fetching coupons:', err.message);
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// ---- 5. Save an email signup ----
+app.post('/subscribe', async (req, res) => {
+  try {
+    const { email } = req.body;
+    if (!email || !email.includes('@')) {
+      return res.status(400).json({ success: false, error: 'Invalid email' });
+    }
+    const { data, error } = await supabase
+      .from('subscribers')
+      .insert([{ email }])
+      .select();
+    if (error) throw error;
+    res.json({ success: true, subscriber: data[0] });
+  } catch (err) {
+    console.error('Error saving subscriber:', err.message);
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// ---- 6. Save a bulk order / contact form submission ----
+app.post('/bulk-order', async (req, res) => {
+  try {
+    const { name, phone, quantity, message } = req.body;
+    if (!name || !phone) {
+      return res.status(400).json({ success: false, error: 'Name and phone are required' });
+    }
+    const { data, error } = await supabase
+      .from('bulk_orders')
+      .insert([{ name, phone, quantity, message }])
+      .select();
+    if (error) throw error;
+    res.json({ success: true, submission: data[0] });
+  } catch (err) {
+    console.error('Error saving bulk order request:', err.message);
     res.status(500).json({ success: false, error: err.message });
   }
 });
