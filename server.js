@@ -265,6 +265,24 @@ app.post('/login', async (req, res) => {
   }
 });
 
+// ---- 9. Get a customer's order history ----
+app.get('/my-orders', async (req, res) => {
+  try {
+    const { email } = req.query;
+    if (!email) return res.status(400).json({ success: false, error: 'Email is required' });
+    const { data, error } = await supabase
+      .from('orders')
+      .select('*')
+      .eq('email', email)
+      .order('created_at', { ascending: false });
+    if (error) throw error;
+    res.json({ success: true, orders: data });
+  } catch (err) {
+    console.error('Error fetching order history:', err.message);
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
 app.listen(PORT, () => {
   console.log(`Powerzyme backend running on port ${PORT}`);
 });
