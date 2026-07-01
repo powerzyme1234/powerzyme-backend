@@ -9,6 +9,7 @@ const Razorpay = require('razorpay');
 const { createClient } = require('@supabase/supabase-js');
 const { Resend } = require('resend');
 const bcrypt = require('bcryptjs');
+const PDFDocument = require('pdfkit');
 require('dotenv').config();
 
 const app = express();
@@ -41,6 +42,47 @@ const razorpay = new Razorpay({
 });
 
 const supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_KEY);
+
+// ---- Generate a simple invoice PDF as a Buffer ----
+function generateInvoicePDF({ customerName, email, address, items, amount, paymentId, date }) {
+  return new Promise((resolve, reject) => {
+    const doc = new PDFDocument({ margin: 50 });
+    const chunks = [];
+    doc.on('data', (chunk) => chunks.push(chunk));
+    doc.on('end', () => resolve(Buffer.concat(chunks)));
+    doc.on('error', reject);
+
+    doc.fontSize(20).fillColor('#B76E79').text('Powerzyme Nutrition', { align: 'left' });
+    doc.fontSize(10).fillColor('#666').text('powerzymenutrition@gmail.com', { align: 'left' });
+    doc.moveDown(1.5);
+
+    doc.fontSize(16).fillColor('#000').text('Invoice', { align: 'left' });
+    doc.moveDown(0.5);
+    doc.fontSize(10).fillColor('#333');
+    doc.text(`Invoice Date: ${date}`);
+    doc.text(`Payment ID: ${paymentId}`);
+    doc.moveDown(1);
+
+    doc.fontSize(12).fillColor('#000').text('Billed To:');
+    doc.fontSize(10).fillColor('#333').text(customerName || '-');
+    doc.text(email || '-');
+    doc.text(address || '-');
+    doc.moveDown(1);
+
+    doc.fontSize(12).fillColor('#000').text('Order Items:');
+    doc.moveDown(0.3);
+    (items || []).forEach((i) => {
+      doc.fontSize(10).fillColor('#333').text(`${i.name}  x${i.qty}  —  ₹${i.price * i.qty}`);
+    });
+    doc.moveDown(1);
+
+    doc.fontSize(13).fillColor('#000').text(`Total Paid: ₹${amount}`, { align: 'right' });
+    doc.moveDown(2);
+    doc.fontSize(9).fillColor('#888').text('Thank you for shopping with Powerzyme Nutrition.', { align: 'center' });
+
+    doc.end();
+  });
+}
 const resend = RESEND_API_KEY ? new Resend(RESEND_API_KEY) : null;
 
 // ---- Health check ----
@@ -94,6 +136,9 @@ app.post('/verify-payment', async (req, res) => {
       email,
       phone,
       address,
+      addr1,
+      addr2,
+      pincode,
       items,
       amount
     } = req.body;
@@ -102,7 +147,6 @@ app.post('/verify-payment', async (req, res) => {
       return res.status(400).json({ success: false, error: 'Missing payment verification fields' });
     }
 
-    // Verify the payment signature is genuinely from Razorpay
     const body = razorpay_order_id + '|' + razorpay_payment_id;
     const expectedSignature = crypto
       .createHmac('sha256', RAZORPAY_KEY_SECRET)
@@ -115,7 +159,6 @@ app.post('/verify-payment', async (req, res) => {
       return res.status(400).json({ success: false, error: 'Payment verification failed — signature mismatch' });
     }
 
-    // Save the order to Supabase
     const { data, error } = await supabase
       .from('orders')
       .insert([{
@@ -123,21 +166,36 @@ app.post('/verify-payment', async (req, res) => {
         email,
         phone,
         address,
+        addr1,
+        addr2,
+        pincode,
         items: JSON.stringify(items),
         amount,
         payment_id: razorpay_payment_id,
+        payment_method: 'Online',
         status: 'paid'
       }])
       .select();
 
     if (error) throw error;
 
-    // Send order confirmation email (non-blocking — order is already saved either way)
+    // Send order confirmation email with invoice attached (non-blocking — order is already saved either way)
     if (resend && email) {
       try {
         const itemsList = (items || [])
           .map(i => `${i.name} x${i.qty} — ₹${i.price * i.qty}`)
           .join('<br>');
+
+        const invoiceDate = new Date().toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' });
+        const invoiceBuffer = await generateInvoicePDF({
+          customerName: customer_name,
+          email,
+          address,
+          items,
+          amount,
+          paymentId: razorpay_payment_id,
+          date: invoiceDate
+        });
 
         await resend.emails.send({
           from: 'Powerzyme Nutrition <orders@powerzymenutrition.in>',
@@ -153,9 +211,22 @@ app.post('/verify-payment', async (req, res) => {
               <p><b>Payment ID:</b> ${razorpay_payment_id}</p>
               <p><b>Delivery Address:</b><br>${address}</p>
               <p>We'll notify you once your order ships. Expected delivery: 4-6 days (1-2 days for Delhi NCR).</p>
+              <p>You can check shipping updates anytime through the account section on our website.</p>
+              <p>The invoice is attached below.</p>
+              <div style="margin:28px 0; padding:20px; background:#f9f5f5; border-radius:12px; text-align:center;">
+                <p style="font-size:15px; font-weight:bold; color:#B76E79; margin-bottom:6px;">Your gains don't stop here. 💪</p>
+                <p style="font-size:13px; color:#555; margin-bottom:18px;">Stack your results — explore our full range of protein, creatine, pre-workout, and more. Your next level is one order away.</p>
+                <a href="https://powerzymenutrition.in" style="display:inline-block; background:#B76E79; color:#fff; text-decoration:none; padding:12px 32px; border-radius:30px; font-weight:bold; font-size:14px; letter-spacing:0.5px;">Shop Now →</a>
+              </div>
               <p style="margin-top:24px; color:#888; font-size:13px;">Powerzyme Nutrition · powerzymenutrition@gmail.com</p>
             </div>
-          `
+          `,
+          attachments: [
+            {
+              filename: `Powerzyme_Invoice_${razorpay_payment_id}.pdf`,
+              content: invoiceBuffer.toString('base64')
+            }
+          ]
         });
       } catch (emailErr) {
         console.error('Order saved, but confirmation email failed:', emailErr.message);
@@ -279,6 +350,71 @@ app.get('/my-orders', async (req, res) => {
     res.json({ success: true, orders: data });
   } catch (err) {
     console.error('Error fetching order history:', err.message);
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// ---- 10. Place a COD order ----
+app.post('/place-cod-order', async (req, res) => {
+  try {
+    const { customer_name, email, phone, address, addr1, addr2, pincode, items, amount, payment_method } = req.body;
+    if (!customer_name || !phone || !addr1 || !pincode) {
+      return res.status(400).json({ success: false, error: 'Missing required fields' });
+    }
+    const { data, error } = await supabase
+      .from('orders')
+      .insert([{
+        customer_name,
+        email,
+        phone,
+        address,
+        addr1,
+        addr2,
+        pincode,
+        items: JSON.stringify(items),
+        amount,
+        payment_id: 'COD-' + Date.now(),
+        payment_method: 'COD',
+        status: 'pending'
+      }])
+      .select();
+    if (error) throw error;
+
+    // Send confirmation email for COD
+    if (resend && email) {
+      try {
+        const itemsList = (items || []).map(i => `${i.name} x${i.qty} — ₹${i.price * i.qty}`).join('<br>');
+        const invoiceDate = new Date().toLocaleDateString('en-IN', { day:'numeric', month:'short', year:'numeric' });
+        const invoiceBuffer = await generateInvoicePDF({ customerName: customer_name, email, address, items, amount, paymentId: 'COD', date: invoiceDate });
+        await resend.emails.send({
+          from: 'Powerzyme Nutrition <orders@powerzymenutrition.in>',
+          to: email,
+          subject: 'Your Powerzyme COD Order is Confirmed! 🎉',
+          html: `
+            <div style="font-family:Arial,sans-serif; max-width:480px; margin:0 auto;">
+              <h2 style="color:#B76E79;">Order Confirmed (COD)!</h2>
+              <p>Hi ${customer_name || 'there'},</p>
+              <p>Thanks for your order — you'll pay <b>₹${amount}</b> cash when it's delivered.</p>
+              <p><b>Order Items:</b><br>${itemsList}</p>
+              <p><b>Total to Pay on Delivery:</b> ₹${amount}</p>
+              <p><b>Delivery Address:</b><br>${address}</p>
+              <p>We'll notify you once your order ships. Expected delivery: 4-6 days (1-2 days for Delhi NCR).</p>
+              <p>You can check shipping updates anytime through the account section on our website.</p>
+              <p>Your gains don't stop here. 💪 Stack your results — explore our full range of protein, creatine, pre-workout, and more.</p>
+              <div style="text-align:center; margin:20px 0;"><a href="https://powerzymenutrition.in" style="background:#B76E79; color:#fff; padding:12px 32px; border-radius:30px; font-weight:bold; text-decoration:none;">Shop Now →</a></div>
+              <p>The invoice is attached below.</p>
+              <p style="color:#888; font-size:13px;">Powerzyme Nutrition · powerzymenutrition@gmail.com</p>
+            </div>
+          `,
+          attachments: [{ filename: `Powerzyme_Invoice_COD.pdf`, content: invoiceBuffer.toString('base64') }]
+        });
+      } catch (emailErr) {
+        console.error('COD order saved, email failed:', emailErr.message);
+      }
+    }
+    res.json({ success: true, order: data[0] });
+  } catch (err) {
+    console.error('Error placing COD order:', err.message);
     res.status(500).json({ success: false, error: err.message });
   }
 });
