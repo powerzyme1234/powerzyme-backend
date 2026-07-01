@@ -13,7 +13,8 @@
     "razorpay": "^2.9.4",
     "@supabase/supabase-js": "^2.45.4",
     "resend": "^4.0.1",
-    "bcryptjs": "^2.4.3"
+    "bcryptjs": "^2.4.3",
+    "pdfkit": "^0.15.0"
   },
   "engines": {
     "node": ">=18.0.0"
